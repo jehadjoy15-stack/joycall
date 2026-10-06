@@ -1,0 +1,24 @@
+{
+  "name": "joycall",
+  "version": "1.0.0",
+  "description": "JoyFlix Real-time Watch Together, Chat History & WebRTC Live Voice Signaling Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "joyflix",
+    "watch-together",
+    "webrtc",
+    "voice-chat",
+    "socket.io",
+    "streaming"
+  ],
+  "author": "Jehad Joy",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}
