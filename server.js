@@ -84,7 +84,8 @@ app.post('/api/rooms/create', (req, res) => {
       playback: {
         isPlaying: !!isPlaying,
         position: Number(position) || 0,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        updatedBy: uId
       },
       members: new Map([
         [uId, { socketId: uId, userId: uId, name: cleanNick, isHost: true, voiceActive: false }]
@@ -212,6 +213,7 @@ app.post('/api/rooms/:roomId/change-episode', (req, res) => {
   room.playback.isPlaying = false;
   room.playback.position = 0;
   room.playback.updatedAt = Date.now();
+  room.playback.updatedBy = room.hostId;
 
   io.to(cleanRoomId).emit('episode-changed', {
     episodeIndex,
