@@ -61,6 +61,168 @@ function generateRoomCode() {
 const rooms = new Map();
 const socketToRoom = new Map();
 
+// ==================== REST API ENDPOINTS ====================
+
+// 1. Create room
+app.post('/api/rooms/create', (req, res) => {
+  try {
+    const { nickname, userId, title, poster, mediaUrl, episodeIndex, season, episode, isPlaying, position } = req.body;
+    const roomId = generateRoomCode();
+    const cleanNick = (nickname || 'Host').trim();
+    const uId = userId || `user_${Date.now()}`;
+
+    const newRoom = {
+      roomId,
+      hostId: uId,
+      hostName: cleanNick,
+      title: title || 'Unknown Title',
+      poster: poster || '',
+      mediaUrl: mediaUrl || '',
+      episodeIndex: typeof episodeIndex === 'number' ? episodeIndex : 0,
+      season: season || 1,
+      episode: episode || 1,
+      playback: {
+        isPlaying: !!isPlaying,
+        position: Number(position) || 0,
+        updatedAt: Date.now()
+      },
+      members: new Map([
+        [uId, { socketId: uId, userId: uId, name: cleanNick, isHost: true, voiceActive: false }]
+      ]),
+      messages: [],
+      voiceUsers: new Set()
+    };
+
+    rooms.set(roomId, newRoom);
+    console.log(`[REST Room Created]: ${roomId} by ${cleanNick}`);
+    res.json({ success: true, roomId, room: serializeRoom(newRoom) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 2. Join room
+app.post('/api/rooms/join', (req, res) => {
+  try {
+    const { roomId, nickname, userId } = req.body;
+    const cleanRoomId = (roomId || '').trim().toUpperCase();
+    if (!rooms.has(cleanRoomId)) {
+      return res.status(404).json({ success: false, error: 'Room not found. Check code!' });
+    }
+
+    const room = rooms.get(cleanRoomId);
+    const cleanNick = (nickname || 'Guest').trim();
+    const uId = userId || `user_${Date.now()}`;
+
+    room.members.set(uId, {
+      socketId: uId,
+      userId: uId,
+      name: cleanNick,
+      isHost: false,
+      voiceActive: false
+    });
+
+    console.log(`[REST Room Joined]: ${cleanNick} joined ${cleanRoomId}`);
+    res.json({ success: true, roomId: cleanRoomId, room: serializeRoom(room) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// 3. Get room state
+app.get('/api/rooms/:roomId', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+  const room = rooms.get(cleanRoomId);
+  res.json({ success: true, room: serializeRoom(room) });
+});
+
+// 4. Send chat message
+app.post('/api/rooms/:roomId/message', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+
+  const room = rooms.get(cleanRoomId);
+  const { senderId, senderName, text } = req.body;
+  if (!text || !text.trim()) {
+    return res.status(400).json({ success: false, error: 'Empty message' });
+  }
+
+  const message = {
+    id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+    senderId: senderId || 'user',
+    senderSocketId: '',
+    senderName: senderName || 'User',
+    text: text.trim(),
+    timestamp: Date.now()
+  };
+
+  room.messages.push(message);
+  if (room.messages.length > 100) room.messages.shift();
+
+  io.to(cleanRoomId).emit('new-message', message);
+  res.json({ success: true, message });
+});
+
+// 5. Get chat messages
+app.get('/api/rooms/:roomId/messages', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+  const room = rooms.get(cleanRoomId);
+  res.json({ success: true, messages: room.messages });
+});
+
+// 6. Sync playback
+app.post('/api/rooms/:roomId/sync', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+
+  const room = rooms.get(cleanRoomId);
+  const { isPlaying, position, updatedBy } = req.body;
+  room.playback.isPlaying = !!isPlaying;
+  room.playback.position = Number(position) || 0;
+  room.playback.updatedAt = Date.now();
+  room.playback.updatedBy = updatedBy || '';
+
+  io.to(cleanRoomId).emit('sync-playback', room.playback);
+  res.json({ success: true, playback: room.playback });
+});
+
+// 7. Host change episode
+app.post('/api/rooms/:roomId/change-episode', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+
+  const room = rooms.get(cleanRoomId);
+  const { episodeIndex, season, episode, title } = req.body;
+  room.episodeIndex = episodeIndex;
+  if (season !== undefined) room.season = season;
+  if (episode !== undefined) room.episode = episode;
+  if (title) room.title = title;
+  room.playback.isPlaying = false;
+  room.playback.position = 0;
+  room.playback.updatedAt = Date.now();
+
+  io.to(cleanRoomId).emit('episode-changed', {
+    episodeIndex,
+    season: room.season,
+    episode: room.episode,
+    title: room.title
+  });
+
+  res.json({ success: true, episodeIndex, room: serializeRoom(room) });
+});
+
 io.on('connection', (socket) => {
   console.log(`[Socket Connected]: ${socket.id}`);
 
