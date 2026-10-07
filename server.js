@@ -310,6 +310,16 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Direct low-latency live audio streaming (Discord VoIP mesh)
+  socket.on('voice-audio-chunk', ({ data }) => {
+    const roomId = socketToRoom.get(socket.id);
+    if (!roomId) return;
+    socket.to(roomId).emit('voice-audio-chunk', {
+      from: socket.id,
+      data
+    });
+  });
+
   // User turns Voice Call OFF
   socket.on('voice-leave', () => {
     handleVoiceLeave(socket);
