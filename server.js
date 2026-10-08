@@ -21,6 +21,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', activeRooms: rooms.size });
 });
 
+app.get('/api/rooms', (req, res) => {
+  const allRooms = Array.from(rooms.values()).map(serializeRoom);
+  res.json({ success: true, count: allRooms.length, rooms: allRooms });
+});
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -66,7 +71,7 @@ const socketToRoom = new Map();
 // 1. Create room
 app.post('/api/rooms/create', (req, res) => {
   try {
-    const { nickname, userId, title, poster, mediaUrl, episodeIndex, season, episode, isPlaying, position } = req.body;
+    const { nickname, userId, title, poster, streamUrl, mediaUrl, apiName, episodeId, tvType, episodeIndex, season, episode, isPlaying, position } = req.body;
     const roomId = generateRoomCode();
     const cleanNick = (nickname || 'Host').trim();
     const uId = userId || `user_${Date.now()}`;
@@ -77,7 +82,11 @@ app.post('/api/rooms/create', (req, res) => {
       hostName: cleanNick,
       title: title || 'Unknown Title',
       poster: poster || '',
+      streamUrl: streamUrl || '',
       mediaUrl: mediaUrl || '',
+      apiName: apiName || '',
+      episodeId: episodeId || null,
+      tvType: tvType || null,
       episodeIndex: typeof episodeIndex === 'number' ? episodeIndex : 0,
       season: season || 1,
       episode: episode || 1,
@@ -95,7 +104,7 @@ app.post('/api/rooms/create', (req, res) => {
     };
 
     rooms.set(roomId, newRoom);
-    console.log(`[REST Room Created]: ${roomId} by ${cleanNick}`);
+    console.log(`[REST Room Created]: ${roomId} by ${cleanNick} (Source: ${apiName || 'Direct'} / Stream: ${streamUrl ? 'Yes' : 'No'})`);
     res.json({ success: true, roomId, room: serializeRoom(newRoom) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -225,6 +234,81 @@ app.post('/api/rooms/:roomId/change-episode', (req, res) => {
   res.json({ success: true, episodeIndex, room: serializeRoom(room) });
 });
 
+// 8. Update room source (mediaUrl, streamUrl, apiName)
+app.post('/api/rooms/:roomId/source', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+
+  const room = rooms.get(cleanRoomId);
+  const { streamUrl, mediaUrl, apiName, episodeId } = req.body;
+  if (streamUrl) room.streamUrl = streamUrl;
+  if (mediaUrl) room.mediaUrl = mediaUrl;
+  if (apiName) room.apiName = apiName;
+  if (episodeId !== undefined) room.episodeId = episodeId;
+
+  io.to(cleanRoomId).emit('source-updated', {
+    streamUrl: room.streamUrl,
+    mediaUrl: room.mediaUrl,
+    apiName: room.apiName,
+    episodeId: room.episodeId
+  });
+
+  res.json({ success: true, room: serializeRoom(room) });
+});
+
+// 9. Update voice active status for a user
+app.post('/api/rooms/:roomId/voice-status', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+
+  const room = rooms.get(cleanRoomId);
+  const { userId, voiceActive } = req.body;
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'Missing userId' });
+  }
+
+  const member = room.members.get(userId);
+  const isActive = !!voiceActive;
+  if (member) {
+    member.voiceActive = isActive;
+  }
+  if (isActive) {
+    room.voiceUsers.add(userId);
+  } else {
+    room.voiceUsers.delete(userId);
+  }
+
+  io.to(cleanRoomId).emit('members-updated', Array.from(room.members.values()));
+  res.json({ success: true, voiceActive: isActive, voiceUsers: Array.from(room.voiceUsers) });
+});
+
+// 10. Send voice audio chunk message
+app.post('/api/rooms/:roomId/voice', (req, res) => {
+  const cleanRoomId = req.params.roomId.trim().toUpperCase();
+  if (!rooms.has(cleanRoomId)) {
+    return res.status(404).json({ success: false, error: 'Room not found' });
+  }
+
+  const room = rooms.get(cleanRoomId);
+  const { id, senderId, senderName, audioBase64, durationMs, timestamp } = req.body;
+  const voiceMsg = {
+    id: id || `voice_${Date.now()}`,
+    senderId: senderId || 'user',
+    senderName: senderName || 'User',
+    audioBase64: audioBase64 || '',
+    durationMs: durationMs || 0,
+    timestamp: timestamp || Date.now()
+  };
+
+  room.lastVoice = voiceMsg;
+  io.to(cleanRoomId).emit('voice-audio-chunk', voiceMsg);
+  res.json({ success: true, voice: voiceMsg });
+});
+
 io.on('connection', (socket) => {
   console.log(`[Socket Connected]: ${socket.id}`);
 
@@ -243,7 +327,11 @@ io.on('connection', (socket) => {
         hostName: nickname,
         title: payload?.title || 'Unknown Title',
         poster: payload?.poster || '',
+        streamUrl: payload?.streamUrl || '',
         mediaUrl: payload?.mediaUrl || '',
+        apiName: payload?.apiName || '',
+        episodeId: payload?.episodeId || null,
+        tvType: payload?.tvType || null,
         episodeIndex: typeof payload?.episodeIndex === 'number' ? payload.episodeIndex : 0,
         season: payload?.season || 1,
         episode: payload?.episode || 1,
@@ -553,12 +641,18 @@ function serializeRoom(room) {
     hostName: room.hostName,
     title: room.title,
     poster: room.poster,
+    streamUrl: room.streamUrl || '',
+    mediaUrl: room.mediaUrl || '',
+    apiName: room.apiName || '',
+    episodeId: room.episodeId || null,
+    tvType: room.tvType || null,
     episodeIndex: room.episodeIndex,
     season: room.season,
     episode: room.episode,
     playback: room.playback,
     members: Array.from(room.members.values()),
     messages: room.messages,
+    lastVoice: room.lastVoice || null,
     voiceUsers: Array.from(room.voiceUsers)
   };
 }
